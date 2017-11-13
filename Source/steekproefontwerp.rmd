@@ -1,0 +1,562 @@
+
+# Steekproefkader
+Het steekproefkader geeft aan waar de verschillende habitattypen en habitat(sub)typen voorkomen en vormt de basis voor de selectie van de meetpunten. Er zijn twee informatiebronnen:
+
+* De Habitatkaart: deze is gebiedsdekkend; polygonen kunnen uit verschillende habitattypen of andere vegetatietypen bestaan
+* De kartering in kader van PINK: dekt ongeveer 1/3de van de duinhabitats in Vlaanderen; is gedetailleerder en recenter dan de Habitatkaart; een polygoon bevat 1 (dominant) habitattype
+
+Als steekproefkader gebruiken we een combinatie van beide bronnen. We gebruiken in de eerste plaats de PINK-kartering en voor de delen die hierdoor niet gedekt worden gebruiken we de Habitatkaart. Concreet maken we een selectie van alle polygonen uit de Habitatkaart die niet (geheel of gedeeltelijk) overlappen met polygonen uit de PINK-kartering. De geselecteerde polygonen uit de Habitatkaar voegen we samen met de polygonen uit de PINK-kartering. 
+
+
+```{r HabitatkaartBWK}
+
+BWK_shape <- readOGR("../Data/Steekproefkader/.", "BWK2_Duinhabitats2", verbose = FALSE)
+
+BWK_shape$Pol_ID <- paste("BWK",1:length(BWK_shape$OBJECTID), sep="")
+
+BWK_shape$Pol_beschrijving <- paste(BWK_shape$PHAB1,"% ",BWK_shape$HAB1,
+                                      ifelse(is.na(BWK_shape$HAB2),"",paste("; ",BWK_shape$PHAB2,"% ",BWK_shape$HAB2,sep="")),
+                                      ifelse(is.na(BWK_shape$HAB3),"",paste("; ",BWK_shape$PHAB3,"% ",BWK_shape$HAB3,sep="")),
+                                      ifelse(is.na(BWK_shape$HAB4),"",paste("; ",BWK_shape$PHAB4,"% ",BWK_shape$HAB4,sep="")),
+                                      ifelse(is.na(BWK_shape$HAB5),"",paste("; ",BWK_shape$PHAB5,"% ",BWK_shape$HAB5,sep="")),sep="")
+
+#data ordenen: verschillende habitatfracties binnen polygoon --> aparte records
+BWK_hab <- BWK_shape@data %>%
+  rename(Shape_Area = SHAPE_Area) %>%
+  gather(HAB1, HAB2, HAB3, HAB4, HAB5, key = "HabNr", value = "Code") %>%
+  select(Pol_ID, Pol_beschrijving, Shape_Area, HabNr, Code)
+
+temp <- BWK_shape@data %>%
+  gather(PHAB1, PHAB2, PHAB3, PHAB4, PHAB5, key = "PhabNr", value = "Phab") 
+
+BWK_hab$PhabNr <- temp$PhabNr            
+BWK_hab$Phab <- temp$Phab
+
+BWK_hab <- BWK_hab %>%
+  filter(!is.na(Code) & Code != "gh")
+
+#codes met meerdere mogelijke habitats (gescheiden door komma) opsplitsen in verschillende records
+BWK_hab$Code <- as.character(BWK_hab$Code)
+BWK_hab$Code_orig <- as.character(BWK_hab$Code)
+BWK_hab_onzeker <- BWK_hab[grep(",",BWK_hab$Code),]
+BWK_hab_zeker <- BWK_hab[grep(",",BWK_hab$Code,invert=TRUE),]
+
+Split <- strsplit(BWK_hab_onzeker$Code, ",")
+BWK_hab_onzeker2 <- do.call(rbind, lapply(seq_along(Split), function(i){
+  if(length(Split[[i]]) == 1){
+    BWK_hab_onzeker[i, ]
+  } else {
+    merge(data.frame(Code = Split[[i]]), BWK_hab_onzeker[i, -5])
+  }
+}))
+
+BWK_hab2 <- rbind(BWK_hab_zeker,BWK_hab_onzeker2)
+
+#habitattype en subtype uit code afleiden
+BWK_hab2$Habt<-substr(BWK_hab2$Code,1,4)
+BWK_hab2$Habsubt<-BWK_hab2$Code
+
+#enkel habitatvlekken selecteren met habitat
+duinen <- c("2120","2130","2160","2170","2180","2190")
+BWK_hab2 <- BWK_hab2 %>%
+  filter(Habt %in% duinen) %>%
+  group_by(Pol_ID, Pol_beschrijving, Habt, Habsubt) %>%
+  summarise(Phab = sum(Phab),
+            Shape_Area = unique(Shape_Area))
+
+# SBZH
+SBZH <- readOGR("../../BasisData/SBZH/.", "SBZH", verbose = FALSE)
+proj4string(SBZH) <- proj4string(BWK_shape)
+BWK_shape_SBZH <- BWK_shape[SBZH,]
+BWK_hab2$SBZH <- ifelse(BWK_hab2$Pol_ID %in% BWK_shape_SBZH$Pol_ID, 1 , 0)
+
+# Oppervlakte vegetatievlek
+BWK_hab2$Patch_Area <- BWK_hab2$Shape_Area * BWK_hab2$Phab/100
+```
+
+
+```{r readPINKkaart}
+PINK_shape <- readOGR("../Data/Steekproefkader/.","Habitatkaart_20170613", verbose = FALSE)
+
+PINK_shape$Pol_ID <- paste("PINK",1:length(PINK_shape$OBJECTID), sep="")
+
+PINK_hab <- PINK_shape@data %>%
+  select(Pol_ID, Dom_Hab, Shape_Area)
+
+PINK_hab$Dom_Hab <- as.character(PINK_hab$Dom_Hab)
+PINK_hab$Habt <- substr(PINK_hab$Dom_Hab,1,4)
+PINK_hab <- PINK_hab %>%
+  filter(Habt %in% duinen)
+PINK_hab$Habsubt <- PINK_hab$Dom_Hab
+
+# codes conform habitatkaart maken
+PINK_hab$Habsubt <- ifelse(PINK_hab$Habsubt %in% c("2130","2130?"), "2130_hd", PINK_hab$Habsubt)
+
+# SBZH
+proj4string(PINK_shape) <- proj4string(BWK_shape)
+PINK_shape_SBZH <- PINK_shape[SBZH,]
+PINK_hab$SBZH <- ifelse(PINK_hab$Pol_ID %in% PINK_shape_SBZH$Pol_ID, 1 , 0)
+
+# Oppervlakte vegetatievlek (polygoon = vegetatievlek)
+PINK_hab$Patch_Area <- PINK_hab$Shape_Area
+
+```
+
+
+
+```{r combineMaps}
+
+BWK_shape_PINK <- BWK_shape[PINK_shape,]
+BWK_shape_notPINK <- BWK_shape[!(BWK_shape$Pol_ID %in% BWK_shape_PINK$Pol_ID),]
+BWK_shape_notPINK@data <- select(BWK_shape_notPINK@data, Pol_ID, Pol_beschrijving)
+BWK_shape_notPINK$Source <- "BWK"
+
+PINK_shape$Pol_beschrijving <- PINK_shape$Dom_Hab
+PINK_shape@data <- select(PINK_shape@data, Pol_ID, Pol_beschrijving)
+PINK_shape$Source <- "PINK"
+
+Comb_shape <- rbind.SpatialPolygonsDataFrame(BWK_shape_notPINK, PINK_shape)
+#writeOGR(Comb_shape, "../Output/.", "SteekproefkaderComb", driver = "ESRI Shapefile")
+
+BWK_hab2$Source <- "BWK"
+PINK_hab$Source <- "PINK"
+PINK_hab$Phab <- 100
+
+Comb_hab <- BWK_hab2 %>%
+  filter(Pol_ID %in% BWK_shape_notPINK$Pol_ID) %>%
+  bind_rows(PINK_hab)
+```
+
+Tabel \@ref(tab:tabelSteekproefkader) geeft een overzicht van de oppervlaktes in hectare van elk habitat(sub)type in het steekproefkader waarbij onderscheid gemaakt wordt tussen beide habitattypen.
+
+```{r tabelSteekproefkader}
+Comb_hab %>%
+  group_by(Source, Habsubt) %>%
+  summarise(Area = sum(Patch_Area)/10000) %>%
+  spread(key = Source, value = Area, fill = 0) %>%
+  mutate(Totaal = BWK + PINK) %>%
+  kable(digits = 1, booktabs = TRUE, caption = "Oppervlakte (hectare) per habitat(sub)type in steekproefkader, met onderscheid tussen beide informatiebronnen", format = "latex") %>%
+  kable_styling(latex_options = c("hold_position")) %>%
+  kable_styling(font_size = 10)
+
+```
+
+# Bijkomende informatie
+
+Bijkomend hebben we informatie over het beheer in de duinhabitats en over de verschillende gebieden aan de kust waar PINK-PQ's liggen. Deze informatie zal gebruikt worden bij het inpassen van de PINK-PQ's in de steekproef (zie verder).   
+
+```{r beheer}
+# Deze shapefile is een intersect tussen de shapefile met Beheer en de shapefile van steekproefkader
+Beheer_shape <- readOGR("../Data/Strata/Kaartenbeheer/.", "SteekproefkaderBeheerIntersect_v2", verbose = FALSE)
+
+#Enkel deel dat overlapt met steekproefkader selecteren
+Beheer <- Beheer_shape@data %>%
+  filter(!is.na(Pol_ID))
+
+# als beheer niet gespecifieerd is verodnerstellen we 'niets doen'
+Beheer$Beheer <- ifelse(is.na(Beheer$Beheer), "Niets doen", as.character(Beheer$Beheer))
+
+BeheerPol <- Beheer %>%
+  group_by(Pol_ID, Beheer) %>%
+  summarise(AreaBeheer =sum(Area))
+
+Overzicht_beheer <- left_join(Comb_hab, BeheerPol, by = "Pol_ID") %>%
+  group_by(Habsubt) %>%
+  mutate(TotaalOpp = sum(Phab/100 * AreaBeheer)/10000) %>%
+  group_by(Habsubt, Beheer, TotaalOpp) %>%
+  summarise(AandeelBeheer = sum(Phab/100 * AreaBeheer)/10000/unique(TotaalOpp)) %>%
+  spread(key = Beheer, value = AandeelBeheer, fill = 0) 
+``` 
+
+Tabel \@ref(tab:Tabelbeheer) geeft overzicht van het aandeel van elk beheertype per habitat(sub)type.
+
+``` {r Tabelbeheer}
+Overzicht_beheer %>%
+  kable(digits = c(0,0,2,2,2,2,2), booktab = TRUE, caption = "Oppervlakte (ha) en aandeel van de verschillende beheertypes per habitat(sub)type") %>%
+  kable_styling(latex_options = c("hold_position")) %>%
+  kable_styling(font_size = 8)
+  
+```
+
+
+```{r kustgebieden}
+
+Kustgebieden <- readOGR("../Data/strata/.","KustgebiedMetPQ_2017", verbose = FALSE)
+proj4string(Kustgebieden) <- proj4string(BWK_shape)
+
+```
+
+# Steekproefgrootte
+
+Voor de steekproefgrootteberekening volgen we dezelfde redenering als in Westra et al. (2014):
+
+* 80 meetpunten op schaal Vlaanderen
+* overbemonstering binnen SBZH tot 170 meetpunten
+* overbemonstering binnen habitat(sub)type schaal Vlaanderen tot 80 meetpunten
+
+De steekproefgroottes worden daarna gecorrigeerd via 'Finite population correction'. Dit komt er op neer dat de steekproefgrootte afneemt naarmate de oppervlakte van een habitat(sub)type kleiner is.
+
+```{r calcSampleSize}
+
+s_sup <- 32 * 32 /10000
+
+overzicht_habsubt <- Comb_hab %>%
+  ungroup() %>%
+  filter(Phab > 10) %>%
+  group_by(SBZH, Habsubt) %>%
+  summarise(
+    Habt = unique(Habt),
+    Area_habsubt_strat = sum(Patch_Area)/10000,
+    Trefkans = sum(Patch_Area)/sum(Shape_Area)
+  ) %>%
+  ungroup() %>%
+  group_by(Habt) %>% #Oppervlakte en eindige populatiegrootte per habitattype
+  mutate(Area_habt_totaal = sum(Area_habsubt_strat),
+         N_vl = sum(Area_habsubt_strat)/s_sup) %>%
+  group_by(Habt, SBZH) %>% #Oppervlakte en eindige populatiegrootte per habitattype/stratum
+  mutate(Area_habt_strat = sum(Area_habsubt_strat),
+         N_SBZH = sum(Area_habsubt_strat)/s_sup * SBZH) %>%
+  ungroup() %>%
+  group_by(Habt, Habsubt) %>% #Oppervlakte en eindige populatiegrootte per habitat(sub)type
+  mutate(Area_habsubt_totaal = sum(Area_habsubt_strat),
+         N_habsubt = sum(Area_habsubt_strat)/s_sup)
+  
+# steekproefgrootte Vlaanderen = 80; correctie eindige populaties; verdeling over de verschillende strata (binnen/buiten SBZH, subttypes)   
+  overzicht_habsubt$n_vl <- overzicht_habsubt$N_vl * 80 /(80 + overzicht_habsubt$N_vl -1) * overzicht_habsubt$Area_habsubt_strat/overzicht_habsubt$Area_habt_totaal 
+  
+# steekproefgrootte binnen SBZH = 170; correctie eindige populaties; verdeling over de subtypes 
+  overzicht_habsubt$nExtra_SBZH <- pmax(0,overzicht_habsubt$N_SBZH * 170 /(170 + overzicht_habsubt$N_SBZH -1) * overzicht_habsubt$Area_habsubt_strat/overzicht_habsubt$Area_habt_strat - overzicht_habsubt$n_vl)
+
+  # steekproefgrootte binnen SBZH = 170; correctie eindige populaties; verdeling over de subtypes
+  overzicht_habsubt$nExtra_habsubt <- pmax(0,overzicht_habsubt$N_habsubt * 80 /(80 + overzicht_habsubt$N_habsubt -1) * overzicht_habsubt$Area_habsubt_strat/overzicht_habsubt$Area_habsubt_totaal - overzicht_habsubt$n_vl - overzicht_habsubt$nExtra_SBZH)
+
+  overzicht_habsubt$nTotaal <- overzicht_habsubt$n_vl + overzicht_habsubt$nExtra_SBZH + overzicht_habsubt$nExtra_habsubt
+  
+  #overbemonstering in functie van trefkans
+  overzicht_habsubt$nBezoek <- overzicht_habsubt$nTotaal/overzicht_habsubt$Trefkans
+  overzicht_habsubt <- ungroup(overzicht_habsubt)
+```
+
+Tabel \@ref(tab:tabelSteekproefgrootte) geeft de gewenste steekproefgrootte ('nTotaal') per habitat(sub)type weer met onderscheid binnen en buiten SBZH. De tabel maakt verder onderscheid tussen:
+
+* het aantal meetpunten op schaal Vlaanderen ('n_vl')
+* het aantal extra gewenste meetpunten binnen SBZH
+* het aantal extra gewenste meetpunten per habitat(sub)type
+
+```{r tabelSteekproefgrootte}
+  overzicht_habsubt %>%
+    select(Habt,Habsubt, SBZH, "Area (ha)" =Area_habsubt_strat, n_vl, nExtra_SBZH, nExtra_habsubt, nTotaal, Trefkans) %>%
+    kable(digits = c(0,0,0,0,0,0,0,0,2), booktabs = TRUE, caption = "Steekproefgrootte per habitat(sub)type binnen en buiten SBZH") %>%
+  kable_styling(latex_options = c("hold_position")) %>%
+  kable_styling(font_size = 8)
+
+```
+
+
+# PINK-PQ's
+
+We maken een eerste selectie uit de bestaande PINK-PQ's. Daarbij sluiten we punten uit
+
+* die niet in habitat vallen ('GH');
+* die in habitat 2110 vallen (hiervoor geen steekproefaanpak, maar kwaliteitsbepaling via kartering);
+* waarvoor habitat niet bepaald is (veld 'Habitat' niet ingevuld);
+* waarvoor habitat onduidelijk is ('?')
+
+
+
+```{r readPQ}
+
+PQsPINK_shape <- readOGR("../Data/PQsPINK/.", "Kust_PQ_2017", verbose = FALSE)
+
+#code aanpassen conform habitatkaart
+PQsPINK_shape$Habitat <- ifelse(PQsPINK_shape$Habitat %in% c("2130", "2130_mos"), "2130_hd",
+                          ifelse(PQsPINK_shape$Habitat == "2130-had", "2130_had", as.character(PQsPINK_shape$Habitat)))
+
+
+proj4string(PQsPINK_shape) <- proj4string(Kustgebieden)
+PQsPINK_shape$Gebied <- over(PQsPINK_shape,Kustgebieden)$NAAM
+PQsPINK_shape$SBZH <- over(PQsPINK_shape,SBZH)$GEBCODE
+PQsPINK_shape$SBZH <- ifelse(is.na(PQsPINK_shape$SBZH), 0, 1)
+
+PQsPINK_shape$Beheer <- ifelse(is.na(PQsPINK_shape$Beheer), "Niet bepaald", as.character(PQsPINK_shape$Beheer))
+
+#geen steekproef voor 2110
+PQsPINK_selectie <- PQsPINK_shape@data %>%
+  filter(!is.na(Habitat) & (!Habitat %in% c("GH", "2110","?")) )
+
+# PQsPINK_shape@data %>%
+#   filter(Opname !=0 ) %>% #Indien opname  = 0 --> nog geen vegetatieopname uitgevoerd
+#   group_by(Habitat) %>%
+#   summarise(
+#     nPQs = n()) %>%
+#   kable()
+
+```
+
+Tabel \@ref(tab:tabelPINKPQ) geeft het totaal aantal PINK-PQ's en het aandeel per beheertype voor de verschillende habitat(sub)types.
+
+```{r tabelPINKPQ}
+
+PQsPINK_selectie %>%
+  group_by(Habitat) %>%
+  mutate(TotaalPQ = n()) %>%
+  group_by(Habitat,Beheer,TotaalPQ) %>%
+  summarise(AandeelPQs =n()/unique(TotaalPQ)) %>%
+  spread(key = Beheer, value = AandeelPQs, fill = 0) %>%
+  kable(digits = 2, booktab =TRUE, caption = "Totaal aantal PINKmeetpunten en het aandeel per beheertype voor de verschillende habitat(sub)types") %>%
+  kable_styling(latex_options = c("hold_position")) %>%
+  kable_styling(font_size = 8)
+
+```
+
+
+
+
+
+
+# Steekproeftrekking
+
+## Rationale
+
+Uit Tabel \@ref(tab:tabelPINKPQ) en Tabel \@ref(tab:Tabelbeheer) blijkt dat er binnen bepaalde beheertypes reltief meer PINK-meetpunten liggen dan andere beheertypen (aandeel PQ's binnen beheertype is hoger dan het oppervlakteaandeel dat een beheertype inneemt volgens steekproefkader). Bovendien zijn bepaalde kustgebieden relatief meer bemonsterd dan anderen. Om vertekening van de steekproef te vermijden, maken we daarom gebruik van volgende werkwijze:
+
+* We nemen eerst een nieuwe steekproef per habitat(sub)type;
+* We beschouwen vervolgens een 'beheereenheid' als een unieke combinatie van gebied,beheertype en habitat(sub)type;
+* Binnen een beheereenheid vervangen we punten uit de nieuwe steekproef door PINK-PQ's (die in die beheereenheid liggen). 
+
+Via bovenstaande werkwijze vermijden we dus dat bepaalde gebieden of beheertypen relatief meer bemonsterd worden dan anderen.
+
+## Praktische uitvoer methode
+
+* We maken gebruik van een master-GRTS voor heel Vlaanderen (zie Westra et al., 2014). Deze bestaat uit een grid van 32m x 32m. Elk gridpunt heeft een unieke 'ranking'. Op basis van deze ranking kunnen de gridpunten gesorteerd worden.  
+
+```{r GRTSmaster}
+GRTS_master <- readOGR("../Data/GRTS_master/.", "GRTS_master_duinen2", verbose = FALSE)
+GRTS_master$id_master <- 1:nrow(GRTS_master@data)
+
+proj4string(GRTS_master) <- proj4string(Beheer_shape)
+
+GRTS_master$Beheer <- over(GRTS_master, Beheer_shape)$Beheer
+GRTS_master$Beheer <- ifelse(is.na(GRTS_master$Beheer), "Niets doen", as.character(GRTS_master$Beheer))
+GRTS_master$Pol_ID <- over(GRTS_master, Comb_shape)$Pol_ID
+GRTS_master$SBZH <- over(GRTS_master, SBZH)$VOLGNR
+GRTS_master$SBZH <- ifelse(is.na(GRTS_master$SBZH), 0, 1)
+GRTS_master$Gebied <- over(GRTS_master, Kustgebieden)$NAAM
+```
+
+* Aan elke PINK-PQ kennen we een GRTS-ranking toe. We nemen hiervoor per PINK-PQ de GRTS-ranking van het dichtste punt uit de master-GRTS.  
+
+```{r GRTSPINK}
+# GRTS rang voor bestaande meetpunten
+
+PQsPINK_shape$id_PQ <- 1:nrow(PQsPINK_shape@data)
+
+distance <- gDistance(PQsPINK_shape, GRTS_master, byid = TRUE) %>%
+  as.data.frame() %>% 
+  gather( key = "id_PQ", value ="distance")
+
+distance$id_master <- rep(1:nrow(GRTS_master@data), nrow(PQsPINK_shape@data))
+
+distance <- distance %>%
+  group_by(id_PQ) %>%
+  summarise(min_distance = min(distance),
+            id_master = id_master[which.min(distance)])
+
+distance$id_PQ <- as.numeric(distance$id_PQ)
+```
+
+* Voor zowel de PINK-PQ's als de nieuwe meetpunten bepalen we de volgorde binnen elke beheereenheid op basis van de GRTS-ranking.
+
+```{r VolgordePINKPQ}
+
+# volgorde binnen elke beheereenheid
+GRTS_PQsPINK <- PQsPINK_shape@data %>% 
+  left_join( distance, by = "id_PQ") %>%
+  left_join(select(GRTS_master@data, id_master, Ranking), by = "id_master") %>%
+  filter(OBJECTID %in% PQsPINK_selectie$OBJECTID) %>%
+  select(OBJECTID, id_PQ, Gebied, SBZH, Habsubt = Habitat, Beheer, RankingPINK = Ranking) %>%
+  group_by(Habsubt, SBZH, Gebied, Beheer) %>%
+  mutate(Volgorde_BeheerEenh = rank(RankingPINK))
+         #,nBeschikbaar_BeheerEenh = n())
+
+# aantal PINK-PQ's binnen elke beheereenheid
+nPQsPINK_beheerEenh <- GRTS_PQsPINK %>%
+  filter(!is.na(Gebied)) %>%
+  group_by(Habsubt, SBZH, Gebied, Beheer) %>%
+  summarise(nBeschikbaar_BeheerEenh = n()) %>%
+  ungroup()
+
+```
+
+* Op basis van de volgorde binnen de beheereenheid, vervangen we nieuwe meetpunten door PINK-PQ's. Het eerste meetpunt wordt vervangen door de eerste PINK-PQ, enz... Als er bijvoorbeeld 5 meetpunten van de nieuwe steekproef en 2 PINK-PQ's liggen binnen een beheereenheid, zullen dus 2 nieuwe meetpunten vervangen worden door de PINK-PQ's.   
+
+```{r GRTS_duinen}
+GRTS_df <- GRTS_master@data %>%
+  filter(!is.na(Pol_ID)) %>%
+  inner_join(select(Comb_hab,-SBZH), by = "Pol_ID") %>%
+  filter(Phab > 10) %>% # we selecteren enkel polygonen die voor meer dan 10% uit doelhabitat bestaan
+  group_by(Habsubt, SBZH) %>%
+  mutate(Volgorde = rank(Ranking)) %>%
+  filter(Volgorde <= 350) %>% # we maken een eerste selectie van 350 punten per stratum
+  ungroup() %>%
+  group_by(Habsubt, SBZH, Gebied, Beheer) %>%
+  mutate(Volgorde_BeheerEenh = rank(Ranking),
+         nGewenst_BeheerEenh = n()) %>%
+  left_join(nPQsPINK_beheerEenh, by = c("Habsubt", "SBZH", "Gebied", "Beheer")) %>% #we voegen het aantal PINK-PQ's per beheereenheid toe
+  left_join(GRTS_PQsPINK, by = c("Habsubt", "SBZH", "Gebied", "Beheer", "Volgorde_BeheerEenh")) %>% #we voegen de ID's van de PINK-PQ toe die ter vervanging dient van het nieuwe meetpunt
+  left_join(select(overzicht_habsubt, SBZH, Habsubt, nBezoek, nTotaal), by =c("SBZH","Habsubt")) #we voegen de gewenste steekproefgrootte toe
+
+GRTS_df$nBeschikbaar_BeheerEenh <- ifelse(is.na(GRTS_df$nBeschikbaar_BeheerEenh), 0, GRTS_df$nBeschikbaar_BeheerEenh)
+GRTS_df$nVervanging <- pmin(GRTS_df$nBeschikbaar_BeheerEenh, GRTS_df$nGewenst_BeheerEenh)
+GRTS_df$nOver <- pmax(GRTS_df$nBeschikbaar_BeheerEenh - GRTS_df$nGewenst_BeheerEenh, 0)
+GRTS_df$Vervanging <- ifelse(GRTS_df$Volgorde_BeheerEenh <= GRTS_df$nVervanging, 1, 0)  
+
+```
+
+* Uit de lijst met overblijvende nieuwe meetpunten schrappen we vervolgens ook deze punten die binnen een straal van 32 meter van een geselecteerde PINK-PQ ligt. Zo vermijden we overlappende meetpunten.  
+
+```{r bufferPQPINK}
+# buffer rond de punten rond de PINKPQ's die als vervanging dienen voor de GRTS-master punten...
+GRTS_df_Replaced <- GRTS_df %>%
+  filter(Vervanging == 1)
+
+PQsPINK_shape_buffer<- PQsPINK_shape[PQsPINK_shape$OBJECTID %in% GRTS_df_Replaced$OBJECTID,] %>%
+  gBuffer(width = 32)
+
+# de punten die niet vervangen worden...
+GRTS_df_NotReplaced <- GRTS_df %>%
+  filter(Vervanging == 0)
+
+GRTS_selectie_shape <- GRTS_master[GRTS_master$id_master %in% GRTS_df_NotReplaced$id_master, ]
+
+# ...punten schrappen die te dicht bij PINK-PQ's liggen
+GRTS_selectie_shape$NearPinkPQ <- over(GRTS_selectie_shape, PQsPINK_shape_buffer)
+GRTS_selectie_schrappen <-   GRTS_selectie_shape@data %>%
+  filter(!is.na(NearPinkPQ))
+
+GRTS_df <- GRTS_df %>%
+  filter(!(id_master %in% GRTS_selectie_schrappen$id_master ))
+
+```
+
+* Ten slotte selecteren we het aantal meetpunten in overeenstemming met de gewenste steekproefgrootte. Hiervoor berekenen we eerst per meetpunt de verwachte trefkans (voor het doelhabitat). De trefkans is gelijk aan 1 voor de PINK-PQ's. Voor de nieuwe meetpunten leiden we de trefkans af uit het steekproefkader: de trefkans is gelijk aan de fractie doelhabitat binnen de polygoon van het steekproefkader waarin het punt valt. Als een punt ligt in een polygoon met 70% doelhabitat, is de trefkans dus 0,7. Vervolgens rangschikken we per stratum (habitat(sub)type + binnen/buiten SBZH) alle meetpunten op basis van de GRTS-ranking. Dan berekenen we de cumulatieve som van de trefkansen. De som van trefkansen komt overeen met het verwacht aantal meetpunten dat in doelhabitat valt. We selecteren dan per stratum een aantal meetpunten zodanig dat de som van de trefkansen overeenkomt met de gewenste steekproefgrootte.      
+
+```{r GRTS_duinen_steekproefgrootte}
+
+GRTS_df$Trefkans_meetpunt <- ifelse(GRTS_df$Vervanging == 1, 1, GRTS_df$Phab/100)
+
+GRTS_df <- GRTS_df %>%
+  arrange(SBZH, Habsubt, Volgorde) %>%
+  group_by(SBZH, Habsubt) %>%
+  mutate(cumSamplesize = cumsum(Trefkans_meetpunt))
+
+GRTS_df$Steekproef <-  ifelse(GRTS_df$cumSamplesize <= (GRTS_df$nTotaal + 1), 1, 0)
+
+```
+
+# Resultaat
+
+De shapefile van de resulterende steekproefpunten heeft als naam 'Steekproef_duinen_versie2017-11-08.shp'. De shapefile bevat o.a. volgende
+attributen:
+
+* TypePQ: nieuw meetpunt of PINK-PQ
+* BrnStkp: informatiebron steekproefkader (Habitatkaart of PINK)
+* Doelhabitat: kolom voor elk habitat(sub)type (1 = doelhabitat; 0 = geen doelhabitat). Een steekproefpunt kan voor meerdere doelhabitats dienen (maar op terrein zal er uiteraard maar 1 habitattype aanwezig zijn).
+* minJaar: jaar binnen meetcyclus van 12 jaar waarin een meetpunt zou moeten opgemeten worden. 
+
+
+```{r selectiePINKPQs}
+
+GRTS_replaced <- GRTS_df %>%
+  filter(Vervanging == 1) %>%
+  select(Ranking_new = Ranking, Beheer, SBZH, Gebied, Habsubt, Volgorde_BeheerEenh, Volgorde, nVervanging, Steekproef)
+
+GRTS_PQsPINK_overzicht <- GRTS_PQsPINK %>%
+  left_join(GRTS_replaced, by = c("Beheer", "SBZH", "Gebied", "Habsubt", "Volgorde_BeheerEenh")) 
+
+GRTS_PQsPINK_sample <- GRTS_PQsPINK_overzicht %>%
+  filter(!is.na(Steekproef) & (Steekproef == 1))
+
+
+
+```
+
+
+```{r steekproefTotaal}
+
+GRTS_df$ID <- ifelse(GRTS_df$Vervanging == 1, 
+                     paste("PINK", GRTS_df$id_PQ, sep="_"),
+                     paste("Nieuw", GRTS_df$id_master, sep = "_"))
+
+GRTS_df$TypePQ <- ifelse(GRTS_df$Vervanging == 1, "PINK_PQ", "Nieuw_PQ")
+
+steekproef_duinen <- GRTS_df %>%
+  select( ID, TypePQ, Ranking, Volgorde, SBZH, Habsubt, Steekproef, Vervanging, BronSteekproefkader =Source, Pol_beschrijving, OBJECTID_PINK = OBJECTID) %>%
+  filter(Steekproef == 1) %>%
+  group_by(Habsubt, SBZH) %>%
+  mutate(randomTemp = runif(1, 0.01, 0.99)) %>%
+  mutate(Jaar = ceiling((Volgorde - randomTemp) * 12 / n())) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  mutate(minJaar = min(Jaar))
+
+steekproef_duinen$OBJECTID_PINK <- ifelse(steekproef_duinen$TypePQ == "Nieuw_PQ", NA, as.character(steekproef_duinen$OBJECTID_PINK))
+
+steekproef_duinen_volgorde_wide <- steekproef_duinen %>%
+  select(-randomTemp, -Jaar) %>%
+  spread(key = Habsubt, value = Volgorde, fill = 0)
+
+steekproef_duinen_wide <- steekproef_duinen %>%
+  select(-randomTemp, -Jaar, -Volgorde, -Vervanging) %>%
+  spread(key = Habsubt, value = Steekproef, fill = 0)
+
+steekproef_duinen_wide$Ranking <- as.numeric(as.character(steekproef_duinen_wide$Ranking))
+```
+
+Tabel \@ref(tab:tabelSteekproefpunten) geeft een overzicht van het aantal te bezoeken punten per habitat(sub)typen binnen en buiten SBZH. 
+
+Opvallend is het groot aantal te bezoeken punten voor habitattype 2170. Dit komt door de lage trefkans. Het is aan te raden om voor dit habitattype eerst een nauwkeurigere kartering af te wachten. Tussentijds kunnen wel al de bestaande PINK-PQ's in 2170 en de punten die in 2170-habitat vallen volgens de (gedetailleerdere) PINK-kartering opgemeten worden.  
+
+
+```{r tabelSteekproefpunten}
+steekproef_duinen %>%
+  group_by(TypePQ, Habsubt,SBZH) %>%
+  summarise(n =n()) %>%
+  spread(TypePQ, n, fill = 0) %>%
+  kable(booktab = TRUE, caption = "Overzicht aantal te bezoeken punten per habitat(sub)typen binnen en buiten SBZH")  %>%
+  kable_styling(latex_options = c("hold_position")) %>%
+  kable_styling(font_size = 10)
+
+```
+
+```{r steekproefTotaal_shapefile}
+
+PQsPINK_Sample_shape <- PQsPINK_shape[PQsPINK_shape$OBJECTID %in%  steekproef_duinen_wide$OBJECTID_PINK,]
+
+PQsPINK_Sample_shape@data <- PQsPINK_Sample_shape@data %>%
+  select(OBJECTID_PINK = OBJECTID) %>%
+  left_join(steekproef_duinen_wide, by ="OBJECTID_PINK")
+
+steekproefNieuw_duinen_wide <- steekproef_duinen_wide %>%
+  filter(TypePQ == "Nieuw_PQ")
+
+steekproefNieuw_duinen_wide$Ranking <- factor(steekproefNieuw_duinen_wide$Ranking)
+
+test <- steekproefNieuw_duinen_wide %>%
+  group_by(Ranking) %>%
+  mutate(n = n())
+
+PQsNieuw_Sample_shape <- GRTS_master[GRTS_master$Ranking %in% steekproefNieuw_duinen_wide$Ranking, ]
+
+PQsNieuw_Sample_shape@data <- PQsNieuw_Sample_shape@data %>%
+  select(Ranking) %>%
+  left_join(steekproefNieuw_duinen_wide, by ="Ranking")
+
+Steekproef_totaal_shape <- rbind.SpatialPointsDataFrame(PQsPINK_Sample_shape, PQsNieuw_Sample_shape)
+
+#writeOGR(Steekproef_totaal_shape, "../Output/.", "Steekproef_duinen_versie2017-11-08", driver = "ESRI Shapefile")
+
+test <- Steekproef_totaal_shape@data
+
+```
+
