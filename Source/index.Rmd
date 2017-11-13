@@ -1,0 +1,66 @@
+---
+title: 'Meetnet habitatkwaliteit: synergie duinen'
+author: "Toon Westra"
+date: "november 2017"
+output:
+  bookdown::pdf_book:
+    base_format: INBOmd::inbo_rapport
+    subtitle: "Tussentijds technisch rapport"
+    reportnr: "Intern Rapport"
+    citation_package: none
+    keep_tex: yes
+  bookdown::gitbook: default
+site: bookdown::bookdown_site
+header-includes: 
+  - \usepackage{placeins}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{multirow}
+  - \usepackage{wrapfig}
+---
+
+
+```{r results ='hide', echo = FALSE, message = FALSE, purl = FALSE, warning=FALSE}
+
+library(knitr)
+opts_chunk$set(
+  echo = FALSE, 
+  results = 'markup',
+  eval = TRUE,
+  cache = TRUE,
+  autodep = TRUE,
+  dev = "pdf",
+  dpi = 300,
+  fig.width = 150 / 25.4,
+  fig.height = 100 / 25.4,
+  warning = FALSE,
+  error = TRUE,
+  message = FALSE
+)
+
+library(pander) # best eerst knitr en daarna pas pander laden
+
+
+#theme_set(theme_bw(base_size = 9))
+
+```
+
+
+```{r Rinit,  warning = FALSE, message = FALSE, results = 'hide', cache = FALSE}
+
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(stringr)
+library(rgdal)
+library(kableExtra)
+library(rgeos)
+```
+
+# Inleiding
+Het meetnet habitatkwaliteit heeft als doel om de kwaliteit van Natura 2000 habitattypen op te volgen op Vlaamse schaal (Westra et al. 2014). Het bestaat uit een steekproef van locaties. In elke locatie gebeurt een vegetatieopname in een vierkant proefvlak en een structuurbepaling in een cirkelvormig proefvlak.
+
+In de duinhabitats liggen al heel wat permante proefvlakken (PQ's) die opgemeten werden in kader van het project Permanente Inventarisatie Kustduinen (PINK). Voor het meetnet habitatkwaliteit willen we zo veel mogelijk gebruik maken van deze bestaande PQ's. Er zijn echter nog heel wat bijkomende meetpunten nodig om de gewenste steekproefgrootte per habitattype of habitatsubtype te bekomen.
+
+In dit document beschrijven we het steekproefontwerp van de duinhabitats, waarbij zo veel mogelijk gebruik gemaakt wordt van de bestaande PINK-PQ's en een set van nieuwe meetpunten wordt geselecteerd.
